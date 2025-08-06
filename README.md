@@ -42,26 +42,3 @@ MIT
 
 ````
 
----
-
-### 📄 **2. `requirements.txt`**
-
-```txt
-aiohttp
-datasets
-tqdm
-tiktoken
-````
-
----
-
-### 📄 **3. `LICENSE`** (MIT, option par défaut)
-
-```txt
-MIT License
-
-Copyright (c) 2025 Antonio
-
-Permission is hereby granted, free of charge, to any person obtaining a copy...
-```
-
