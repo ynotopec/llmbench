@@ -15,7 +15,7 @@ Il utilise des prompts de qualité extraits de [Awesome ChatGPT Prompts](https:/
 ## 🧪 Installation
 
 ```bash
-git clone https://github.com/<ton-utilisateur>/llmbench.git
+git clone https://github.com/ynotopec/llmbench.git
 cd llmbench
 python3 -m venv .venv
 source .venv/bin/activate
