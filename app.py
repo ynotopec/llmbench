@@ -12,9 +12,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Lire les variables d'environnement
-API_URL = os.getenv("API_URL")
-API_KEY = os.getenv("API_KEY")
-MODEL = os.getenv("MODEL")
+API_URL = os.getenv("OPENAI_API_BASE")
+API_KEY = os.getenv("OPENAI_API_KEY")
+MODEL = os.getenv("OPENAI_API_MODEL")
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
