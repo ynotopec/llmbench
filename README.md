@@ -39,6 +39,3 @@ python app.py
 ## 📄 Licence
 
 MIT
-
-````
-
