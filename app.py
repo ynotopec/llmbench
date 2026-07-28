@@ -24,6 +24,19 @@ Pourquoi cette version :
   - Sélection du meilleur C par médiane output_tokens/sec.
   - Deadline absolu, donc durée totale respectée.
 
+Providers compatibles (OpenAI protocol) :
+  - OpenAI       https://api.openai.com/v1/chat/completions
+  - Anthropic*   https://api.anthropic.com/v1/messages  (adapter payload)
+  - Mistral      https://api.mistral.ai/v1/chat/completions
+  - Groq         https://api.groq.com/openai/v1/chat/completions
+  - Together     https://api.together.xyz/v1/chat/completions
+  - vLLM         http://localhost:8000/v1/chat/completions
+  - LiteLLM      http://localhost:4000/v1/chat/completions
+  - Azure        https://<resource>.openai.azure.com/v1/chat/completions
+
+* Anthropic nécessite un format de payload différent (pas OpenAI-compatible).
+  Ce benchmark fonctionne avec n'importe quelle API respectant le protocole OpenAI.
+
 Variables .env utiles :
   API_URL=http://localhost:8000/v1/chat/completions
   API_KEY=
@@ -45,6 +58,14 @@ Variables .env utiles :
 
   OUTPUT_JSON=stress_result.json
   OUTPUT_CSV=stress_result.csv
+
+  # GPU (H100 / DGX Spark) — optionnel
+  # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+  # NCCL_IB_DISABLE=0
+  # NCCL_SOCKET_IFNAME=eth0
+
+  # Token API keys (multiple providers, comma-separated)
+  # API_TOKENS=sk-...,sk-...
 """
 
 from __future__ import annotations
@@ -1156,6 +1177,16 @@ async def main() -> None:
         print("⚠️  MODEL vide. Beaucoup de serveurs OpenAI-compatible exigent un model.")
     if not API_URL:
         raise SystemExit("API_URL manquant.")
+
+    # ── GPU info (H100 / DGX Spark) ──────────────────────────────
+    gpu_info = []
+    for var in ["CUDA_VISIBLE_DEVICES", "NCCL_IB_DISABLE", "NCCL_SOCKET_IFNAME"]:
+        val = os.getenv(var)
+        if val:
+            gpu_info.append(f"{var}={val}")
+    if gpu_info:
+        print(f"   GPU config:       {' | '.join(gpu_info)}")
+        print("─" * 72)
 
     print("🧠 LLM TOKEN THROUGHPUT MAXIMIZER")
     print(f"   API:              {API_URL}")

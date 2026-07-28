@@ -1,4 +1,32 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
 .venv/
+env/
+
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Benchmark results (keep .env.example)
+*.result.json
+*.result.csv
+stress_result*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

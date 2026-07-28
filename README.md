@@ -1,41 +1,49 @@
-# LLMBench – Benchmarker de modèles LLM via API OpenAI-compatible
+# LLMBench
 
-Ce script Python permet de benchmarker des modèles LLM compatibles avec l'API OpenAI (v1/chat/completions), en mesurant :
-- le taux de réussite,
-- la latence moyenne,
-- le débit en tokens/seconde.
+Stress tester for LLM APIs — measures token throughput under concurrent load.
 
-Il utilise des prompts de qualité extraits de [Awesome ChatGPT Prompts](https://huggingface.co/datasets/fka/awesome-chatgpt-prompts).
-
-## 🚀 Prérequis
-
-- Python 3.9+
-- Accès à une API OpenAI-compatible (e.g. vLLM, LiteLLM, Mistral, etc.)
-
-## 🧪 Installation
+## Quick Start
 
 ```bash
-git clone https://github.com/ynotopec/llmbench.git
-cd llmbench
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-````
-
-## ⚙️ Configuration
-
-Édite les variables `API_URL`, `API_KEY`, et `MODEL` dans `app.py` pour tester un modèle spécifique.
-
-## ▶️ Utilisation
-
-```bash
-python app.py
+./install.sh                # one-time setup (installs uv + deps)
+source run.sh               # activates venv + loads .env
+python app.py               # run benchmark
 ```
 
-## 📦 Dataset utilisé
+## Prerequisites
 
-[Awesome ChatGPT Prompts](https://huggingface.co/datasets/fka/awesome-chatgpt-prompts)
+- Python ≥ 3.10
+- UV (auto-installed by `install.sh`)
 
-## 📄 Licence
+## Configuration
 
-MIT
+Copy `.env.example` to `.env` and edit:
+
+```bash
+cp .env.example .env
+```
+
+Required: `API_URL`, `API_KEY`, `MODEL`.
+
+## Usage
+
+```bash
+# Interactive
+python app.py
+
+# With args
+python app.py --duration 120 --max-concurrency 32 --max-tokens 512
+```
+
+## GPU (H100 / DGX Spark)
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NCCL_IB_DISABLE=0
+./run.sh
+```
+
+## Output
+
+- `stress_result.json` — full benchmark report
+- `stress_result.csv`  — per-request details

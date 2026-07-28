@@ -1,0 +1,21 @@
+[project]
+name = "llmbench"
+version = "0.1.0"
+description = "LLM token throughput stress tester"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+]
+
+[dependency-groups]
+dev = []
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
