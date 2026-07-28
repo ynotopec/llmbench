@@ -1,0 +1,42 @@
+{
+  "mode": "adaptive",
+  "config": {
+    "api_url": "https://api-nothink.ailab.infocepo.com/v1/chat/completions",
+    "model": "ai-default",
+    "duration_sec": 300,
+    "initial_concurrency": 1,
+    "max_concurrency": 64,
+    "step_size": 1,
+    "check_interval_sec": 3.0,
+    "batch_size": 8,
+    "error_window": 10,
+    "error_up": 0.02,
+    "error_down": 0.1
+  },
+  "summary": {
+    "duration_sec": 302.37,
+    "total_requests": 192,
+    "success": 192,
+    "fail": 0,
+    "success_rate_pct": 100.0,
+    "avg_qps": 0.63,
+    "total_input_tokens": 22608,
+    "total_output_tokens": 61150,
+    "total_tokens": 83758,
+    "tokens_per_sec": 277.01,
+    "avg_input_tokens": 118.0,
+    "avg_output_tokens": 318.0,
+    "tokens_per_request_sec": 277.0
+  },
+  "latency": {
+    "avg_ms": 8713.0,
+    "min_ms": 607.5,
+    "max_ms": 18113.9,
+    "p50_ms": 9641.6,
+    "p90_ms": 16443.8,
+    "p95_ms": 16839.4,
+    "p99_ms": 17703.7
+  },
+  "errors": {},
+  "history": []
+}

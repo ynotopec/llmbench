@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""
+Stress test LLM API — pression dynamique / adaptive load.
+Régulateur en boucle fermée qui ajuste la concurrence en temps réel
+pour maintenir la charge maximale sans casser l'API.
+"""
+import asyncio
+import aiohttp
+import json
+import time
+from collections import defaultdict, deque
+import tiktoken
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ============================================================
+# CONFIGURATION — modifier ici ou via variables d'environnement
+# ============================================================
+API_URL = os.getenv("API_URL", "http://localhost:8000/v1/chat/completions")
+API_KEY = os.getenv("API_KEY", "")
+MODEL = os.getenv("MODEL", "")
+
+DURATION_SEC = int(os.getenv("STRESS_DURATION", "120"))     # durée totale
+INITIAL_CONCURRENCY = int(os.getenv("INITIAL_CONCURRENCY", "4"))
+MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "256"))   # cap max
+MIN_CONCURRENCY = int(os.getenv("MIN_CONCURRENCY", "1"))
+STEP_SIZE = int(os.getenv("STEP_SIZE", "4"))                 # pas d'ajustement
+
+TARGET_SUCCESS_RATE = float(os.getenv("TARGET_SR", "0.90"))  # viser 90% succès
+MAX_LATENCY_MS = int(os.getenv("MAX_LATENCY_MS", "30000"))    # seuil latence ms
+CHECK_INTERVAL = float(os.getenv("CHECK_INTERVAL", "5.0"))    # fréquence régulation (sec)
+
+TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT", "120"))         # timeout par requête
+
+# ============================================================
+# Chargement prompts variés
+# ============================================================
+encoding = tiktoken.get_encoding("cl100k_base")
+try:
+    from datasets import load_dataset
+    ds = load_dataset("fka/awesome-chatgpt-prompts", split="train[:200]")
+    PROMPTS = [x["prompt"] for x in ds if x.get("prompt")]
+except Exception:
+    PROMPTS = [f"Write a detailed creative response including examples for prompt number {i}" for i in range(50)]
+
+
+class Metrics:
+    """Métriques avec fenêtre glissante + cumulatives."""
+    def __init__(self, window_sec=15):
+        self.window_sec = window_sec
+        self.window = deque()  # [(ok:bool, latency_ms:float, err:str, ts:float)]
+        self.total_ok = 0
+        self.total_fail = 0
+        self.all_latencies = []
+        self.errors = defaultdict(int)
+        self.total_req = 0
+
+    def add(self, ok, latency_ms, err=""):
+        ts = time.monotonic()
+        self.window.append((ok, latency_ms, err, ts))
+        cutoff = ts - self.window_sec
+        while self.window and self.window[0][3] < cutoff:
+            self.window.popleft()
+        if ok:
+            self.total_ok += 1
+        else:
+            self.total_fail += 1
+            if err:
+                self.errors[err] += 1
+        self.all_latencies.append(latency_ms)
+        self.total_req += 1
+
+    @property
+    def win_sr(self):
+        n = len(self.window)
+        return sum(1 for w in self.window if w[0]) / n if n > 0 else 1.0
+
+    @property
+    def win_avg_ms(self):
+        return sum(w[1] for w in self.window) / len(self.window) if self.window else 0
+
+
+class PromptCounter:
+    """Compteur de prompts thread-safe pour les workers."""
+    def __init__(self):
+        self._idx = 0
+        self._lock = asyncio.Lock()
+
+    async def next(self):
+        async with self._lock:
+            idx = self._idx
+            self._idx += 1
+            return idx
+
+
+async def send_request(session: aiohttp.ClientSession, prompt_idx: int) -> tuple:
+    """Envoie une requête. Retourne (ok, latency_ms, error)."""
+    prompt = PROMPTS[prompt_idx % len(PROMPTS)]
+    t0 = time.monotonic()
+    try:
+        async with session.post(API_URL, headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        }, json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 512,
+        }, timeout=aiohttp.ClientTimeout(total=TIMEOUT_SEC)) as resp:
+            latency_ms = (time.monotonic() - t0) * 1000
+            if resp.status != 200:
+                try:
+                    body = await resp.json()
+                    err = f"HTTP{resp.status}:{body.get('error','')}"
+                except Exception:
+                    err = f"HTTP{resp.status}"
+                return False, latency_ms, err
+            data = await resp.json()
+            if not data.get("choices"):
+                return False, latency_ms, "no_choices"
+            return True, latency_ms, ""
+    except asyncio.TimeoutError:
+        return False, (time.monotonic() - t0) * 1000, "timeout"
+    except aiohttp.ClientError as e:
+        return False, (time.monotonic() - t0) * 1000, f"http_err:{type(e).__name__}"
+    except Exception as e:
+        return False, (time.monotonic() - t0) * 1000, f"err:{type(e).__name__}"
+
+
+async def worker(worker_id: int, session: aiohttp.ClientSession,
+                  prompt_counter: PromptCounter, metrics: Metrics):
+    """Worker qui envoie des requêtes en boucle tant que le event loop tourne."""
+    while True:
+        try:
+            prompt_idx = await prompt_counter.next()
+            ok, lat_ms, err = await send_request(session, prompt_idx)
+            metrics.add(ok, lat_ms, err)
+        except Exception:
+            await asyncio.sleep(0.1)
+
+
+async def main():
+    print(f"🎛️  STRESS TEST ADAPTATIF — Pression dynamique")
+    print(f"   Target URL:      {API_URL}")
+    print(f"   Modèle:          {MODEL}")
+    print(f"   Prompts:         {len(PROMPTS)}")
+    print(f"   Durée:           {DURATION_SEC}s")
+    print(f"   Concurrency:     {INITIAL_CONCURRENCY} → max {MAX_CONCURRENCY}")
+    print(f"   Step size:       {STEP_SIZE}")
+    print(f"   Target SR:       {TARGET_SUCCESS_RATE*100:.0f}%")
+    print(f"   Latence max:     {MAX_LATENCY_MS}ms")
+    print(f"   Check interval:  {CHECK_INTERVAL}s")
+    print()
+
+    metrics = Metrics(window_sec=int(CHECK_INTERVAL * 3))
+    start_time = time.monotonic()
+    current_conc = INITIAL_CONCURRENCY
+    last_check = start_time
+    report_rows = []
+
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=TIMEOUT_SEC),
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    )
+
+    prompt_counter = PromptCounter()
+
+    # Lancer le pool de workers permanents
+    workers = [asyncio.create_task(
+        worker(i, session, prompt_counter, metrics)
+    ) for i in range(current_conc)]
+
+    tick = 0
+
+    while True:
+        elapsed = time.monotonic() - start_time
+        if elapsed >= DURATION_SEC:
+            break
+
+        now = time.monotonic()
+
+        # Calculs métriques à chaque itération pour affichage fluide
+        sr_pct = metrics.win_sr * 100
+        avg_ms = metrics.win_avg_ms
+        qps = metrics.total_req / max(elapsed, 1)
+
+        # ===== RÉGULATEUR PÉRIODIQUE =====
+        if now - last_check >= CHECK_INTERVAL:
+            last_check = now
+            tick += 1
+
+            report_rows.append((
+                round(elapsed, 1),
+                current_conc,
+                round(sr_pct, 1),
+                round(avg_ms / 1000, 2),
+                round(qps, 2),
+            ))
+
+            # 🎛️ Logiciel de régulation en boucle fermée
+            reason = ""
+            new_conc = current_conc
+
+            if sr_pct >= TARGET_SUCCESS_RATE * 110 and avg_ms < MAX_LATENCY_MS * 0.5:
+                # Headroom significatif → monter
+                new_conc = min(MAX_CONCURRENCY, current_conc + STEP_SIZE)
+                reason = f"Headroom ↑ ({sr_pct:.0f}% OK, {avg_ms/1000:.1f}s)"
+            elif sr_pct < TARGET_SUCCESS_RATE * 80 or avg_ms > MAX_LATENCY_MS * 90:
+                # Trop d'erreurs ou latence extrême → descendre fort
+                new_conc = max(MIN_CONCURRENCY, current_conc - STEP_SIZE)
+                reason = f"Sous pression ↓ ({sr_pct:.0f}% OK, {avg_ms/1000:.1f}s)"
+            elif sr_pct < TARGET_SUCCESS_RATE:
+                # Zone grise → descente progressive
+                new_conc = max(MIN_CONCURRENCY, current_conc - STEP_SIZE // 2)
+                reason = f"Zone grise ↓ ({sr_pct:.0f}% OK)"
+
+            if new_conc != current_conc:
+                old_conc = current_conc
+                current_conc = new_conc
+
+                # Recréer les workers avec la nouvelle taille
+                for w in workers:
+                    w.cancel()
+                    try:
+                        await w
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                new_workers = [asyncio.create_task(
+                    worker(i, session, prompt_counter, metrics)
+                ) for i in range(current_conc)]
+                workers = new_workers
+
+                print(f"\n  🎯 Concurrency ajustée: {old_conc} → {current_conc} | {reason}")
+
+        # Affichage temps réel
+        pct_complete = min(100, (elapsed / DURATION_SEC) * 100)
+        bar_len = min(30, int(pct_complete / 100 * 30))
+        bar = "█" * bar_len + "░" * (30 - bar_len)
+        remaining_sec = max(0, DURATION_SEC - elapsed)
+
+        print(f"\r  [{bar}] {pct_complete:.0f}% | C:{current_conc:>4d} | SR:{sr_pct:.1f}% | Avg:{avg_ms/1000:.1f}s | QPS:{qps:.1f} | S:{metrics.total_ok:>5d} F:{metrics.total_fail:>5d} | Écoulé:{elapsed:.0f}s/{remaining_sec:.0f}s", end="", flush=True)
+
+        await asyncio.sleep(0.2)
+
+    # Arrêter proprement les workers
+    for w in workers:
+        w.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
+
+    # === RAPPORT FINAL ===
+    print(f"\n\n{'='*70}")
+    print(f"📊 RAPPORT FINAL — STRESS TEST ADAPTATIF")
+    print(f"{'='*70}")
+
+    total_duration = time.monotonic() - start_time
+    total_req = metrics.total_req
+
+    print(f"Durée totale:       {total_duration:.1f}s")
+    print(f"Requêtes totales:   {total_req}")
+    print(f"Succès:             {metrics.total_ok}")
+    print(f"Échecs:             {metrics.total_fail}")
+    print(f"Taux succès global: {metrics.total_ok/total_req*100:.1f}%")
+    print(f"QPS moyen:          {total_req/total_duration:.2f}")
+
+    if metrics.all_latencies:
+        sl = sorted(metrics.all_latencies)
+        n = len(sl)
+        print(f"\n🕐 LATENCES:")
+        print(f"  Moyenne: {sum(sl)/n/1000:.3f}s | Min: {sl[0]/1000:.3f}s | Max: {sl[-1]/1000:.3f}s")
+        print(f"  P50: {sl[n//2]/1000:.3f}s | P90: {sl[int(n*0.9)]/1000:.3f}s | P95: {sl[int(n*0.95)]/1000:.3f}s | P99: {sl[min(int(n*0.99), n-1)]/1000:.3f}s")
+
+    if metrics.errors:
+        print(f"\n❌ ERREURS:")
+        for err, cnt in sorted(metrics.errors.items(), key=lambda x: -x[1]):
+            print(f"  {err}: {cnt}")
+
+    print(f"\n📈 ÉVOLUTION DU RÈGULATEUR:")
+    print(f"{'─'*70}")
+    step = max(1, len(report_rows) // 20)
+    for i in range(0, len(report_rows), step):
+        row = report_rows[i]
+        marker = "START" if row[0] == 0.0 else ("END" if i == len(report_rows)-1 else str(i//step))
+        print(f"  T+{row[0]:>6.1f}s | C:{row[1]:>4d} | SR:{row[2]:>5.1f}% | Lat:{row[3]:>6.2f}s | QPS:{row[4]:>7.2f}  [{marker}]")
+
+    # Export JSON
+    sl = sorted(metrics.all_latencies)
+    n = len(sl)
+    report = {
+        "config": {
+            "api_url": API_URL,
+            "model": MODEL,
+            "duration_sec": DURATION_SEC,
+            "initial_concurrency": INITIAL_CONCURRENCY,
+            "max_concurrency": MAX_CONCURRENCY,
+            "min_concurrency": MIN_CONCURRENCY,
+            "step_size": STEP_SIZE,
+            "target_success_rate": TARGET_SUCCESS_RATE,
+            "max_latency_ms": MAX_LATENCY_MS,
+            "check_interval_sec": CHECK_INTERVAL,
+        },
+        "summary": {
+            "total_duration_sec": round(total_duration, 2),
+            "total_requests": total_req,
+            "success": metrics.total_ok,
+            "fail": metrics.total_fail,
+            "success_rate_pct": round(metrics.total_ok / total_req * 100, 2) if total_req > 0 else 0,
+            "avg_qps": round(total_req / total_duration, 2) if total_duration > 0 else 0,
+        },
+        "latency": {
+            "avg_ms": round(sum(sl)/len(sl), 1) if sl else None,
+            "min_ms": round(sl[0], 1) if sl else None,
+            "max_ms": round(sl[-1], 1) if sl else None,
+            "p50_ms": round(sl[n//2], 1) if sl else None,
+            "p90_ms": round(sl[int(n*0.9)], 1) if sl else None,
+            "p95_ms": round(sl[int(n*0.95)], 1) if sl else None,
+            "p99_ms": round(sl[min(int(n*0.99), n-1)], 1) if sl else None,
+        },
+        "errors": dict(metrics.errors),
+        "history": [
+            {"time_s": r[0], "concurrency": r[1], "sr_pct": r[2], "latency_s": r[3], "qps": r[4]}
+            for r in report_rows
+        ],
+    }
+    with open("stress_adaptive_report.json", "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"\n💾 Rapport JSON: stress_adaptive_report.json")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
